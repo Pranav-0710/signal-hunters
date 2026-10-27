@@ -15,7 +15,7 @@ from pathlib import Path
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from sklearn.metrics import classification_report, f1_score
+from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from sklearn.utils.class_weight import compute_sample_weight
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -66,6 +66,8 @@ def main() -> None:
     print(f"OOF macro-F1  original {f1_score(y, oof_tr.argmax(1), average='macro'):.4f}  "
           f"degraded {f1_score(y, oof_dg.argmax(1), average='macro'):.4f}")
     print(classification_report(y, oof_dg.argmax(1), target_names=LABELS, digits=3))
+    cm = pd.DataFrame(confusion_matrix(y, oof_dg.argmax(1)), index=LABELS, columns=[c[:6] for c in LABELS])
+    print("confusion (rows true, cols predicted):\n" + cm.to_string())
     print("test predicted mix:", pd.Series(np.array(LABELS)[test.argmax(1)]).value_counts().to_dict())
 
     imp = pd.Series(m.feature_importance("gain"), index=f_tr.columns).sort_values(ascending=False)

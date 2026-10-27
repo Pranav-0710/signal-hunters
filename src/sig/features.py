@@ -87,6 +87,15 @@ def _track_scores(s: np.ndarray, gaps: np.ndarray) -> dict:
     feats["trk_min_on_static"] = min_on[:, static].reshape(n, -1).max(1)
     feats["trk_sum_on"] = on.sum(1).reshape(n, -1).max(1) / np.sqrt(3)
     feats["trk_min_off"] = offp.min(1).reshape(n, -1).max(1)
+    # Coherent sum over the three ON crossings with an OFF penalty: faint ETI that no single panel shows
+    sum_clean = on.sum(1) / np.sqrt(3) - np.maximum(max_off, 0)
+    feats["trk_sum_clean_drifting"] = sum_clean[:, ~static].reshape(n, -1).max(1)
+    feats["trk_sum_clean_static"] = sum_clean[:, static].reshape(n, -1).max(1)
+    sc = sum_clean[:, ~static].reshape(n, -1)
+    top = sc.argmax(1)
+    g2, c2 = np.unravel_index(top, sum_clean[:, ~static].shape[1:])
+    feats["trk_sum_clean_on_min"] = on[:, :, ~static].min(1)[np.arange(n), g2, c2]
+    feats["trk_sum_clean_drift"] = np.abs(TRACK_DRIFTS[~static][g2])
     return feats
 
 
@@ -182,4 +191,37 @@ def cadence_features(z: np.ndarray, valid: np.ndarray, gaps: np.ndarray) -> pd.D
     _panel_block("patch_std", tx.std(2), cols)
     _panel_block("patch_max", tx.max(2), cols)
     _panel_block("patch_n3", (tx > 3).sum(2).astype(float), cols)
+    cols.update(texture_features(z, valid))
     return pd.DataFrame(cols)
+
+
+def _corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Pearson correlation over the last two axes, per (cadence, panel)."""
+    a = a - a.mean((-2, -1), keepdims=True)
+    b = b - b.mean((-2, -1), keepdims=True)
+    return (a * b).sum((-2, -1)) / np.sqrt((a * a).sum((-2, -1)) * (b * b).sum((-2, -1)) + 1e-9)
+
+
+def texture_features(z: np.ndarray, valid: np.ndarray) -> dict:
+    """Scintillation: patchy brightening over many channels that twinkles in time, ON panels only.
+
+    Narrow lines are clipped first so a bright RFI line does not look like texture.
+    """
+    n = len(z)
+    c = np.clip(z, -4, 4)
+    cols: dict = {}
+    nv = np.maximum(valid.sum(2), 1)
+    row_mean = c.mean(3)                                                   # (n, 6, 16): broad excess per row
+    _panel_block("tex_mean", c.sum((2, 3)) / (nv * N_CHAN), cols)
+    _panel_block("tex_rowmean_std", row_mean.std(2), cols)
+    _panel_block("tex_rowmean_max", row_mean.max(2), cols)
+    _panel_block("tex_ac_time", _corr(c[:, :, 1:], c[:, :, :-1]), cols)
+    _panel_block("tex_ac_chan2", _corr(c[..., 2:], c[..., :-2]), cols)
+    _panel_block("tex_ac_chan6", _corr(c[..., 6:], c[..., :-6]), cols)
+    _panel_block("tex_skew", ((c - c.mean((2, 3), keepdims=True)) ** 3).mean((2, 3)), cols)
+    for rows, chans in ((2, 32), (8, 16), (16, 8)):
+        box = c.reshape(n, 6, N_ROWS // rows, rows, N_CHAN // chans, chans).mean((3, 5)) * np.sqrt(rows * chans)
+        box = box.reshape(n, 6, -1)
+        _panel_block(f"tex_box{rows}x{chans}_std", box.std(2), cols)
+        _panel_block(f"tex_box{rows}x{chans}_max", box.max(2), cols)
+    return cols
