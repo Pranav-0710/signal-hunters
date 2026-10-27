@@ -1,4 +1,5 @@
-"""Build notebooks/signal_hunters_kaggle.ipynb from the repo code.
+"""Build notebooks/signal_hunters_kaggle.ipynb (full pipeline) and
+notebooks/signal_hunters_kaggle_extra.ipynb (three more pretrained CNNs) from the repo code.
 
 Every source file goes into the notebook verbatim through %%writefile, so the notebook runs
 exactly the code in this repo. Rerun this script after any change to src/ or scripts/.
@@ -75,6 +76,23 @@ RUNS = [
 ]
 
 
+EXTRA_INTRO = """# Signal Hunters - Team Cyclops: extra pretrained models
+
+Runs alongside the main notebook (same code, same folds) and trains three more ImageNet-pretrained
+CNNs. Their `oof/*_oof.csv` and `oof/*_test.csv` are stacked with the main notebook's models in the
+final step. Same setup as the main notebook: Round 2 data as input, **GPU T4**, **Internet on**."""
+
+EXTRA_RUNS = [
+    ("md", "## 1. Folds (identical to the main notebook: seed 42)"),
+    ("code", "!python scripts/make_folds.py"),
+    ("md", "## 2. Three more pretrained CNNs (about 70-90 minutes each)"),
+    ("code", "!python scripts/train_cnn.py --arch efficientnet_b0 --levels --lr 1e-3 --epochs 12 --seed 11 --name eff_lvl_s11"),
+    ("code", "!python scripts/train_cnn.py --arch efficientnet_b0 --layout stacked --levels --lr 1e-3 --epochs 12 --seed 7 --name effstk_lvl_s7"),
+    ("code", "!python scripts/train_cnn.py --arch resnet34 --levels --lr 1e-3 --epochs 12 --name res34_lvl"),
+    ("code", "!ls -la oof"),
+]
+
+
 def cell(kind: str, text: str) -> dict:
     src = text.splitlines(keepends=True)
     if kind == "md":
@@ -82,21 +100,26 @@ def cell(kind: str, text: str) -> dict:
     return {"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [], "source": src}
 
 
-def main() -> None:
-    cells = [cell("md", INTRO), cell("code", SETUP), cell("md", "## 0. Repository code (written verbatim)")]
+def write(name: str, intro: str, runs: list) -> None:
+    cells = [cell("md", intro), cell("code", SETUP), cell("md", "## 0. Repository code (written verbatim)")]
     for f in FILES:
         cells.append(cell("code", f"%%writefile {f}\n" + (ROOT / f).read_text(encoding="utf-8")))
-    cells += [cell(k, t) for k, t in RUNS]
+    cells += [cell(k, t) for k, t in runs]
     nb = {
         "cells": cells,
         "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
                      "language_info": {"name": "python"}},
         "nbformat": 4, "nbformat_minor": 5,
     }
-    out = ROOT / "notebooks/signal_hunters_kaggle.ipynb"
+    out = ROOT / f"notebooks/{name}.ipynb"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(nb, indent=1), encoding="utf-8")
     print(f"wrote {out.relative_to(ROOT)} with {len(cells)} cells")
+
+
+def main() -> None:
+    write("signal_hunters_kaggle", INTRO, RUNS)
+    write("signal_hunters_kaggle_extra", EXTRA_INTRO, EXTRA_RUNS)
 
 
 if __name__ == "__main__":
