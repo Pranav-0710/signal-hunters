@@ -22,9 +22,10 @@ Runs the code from the team repository end to end on Kaggle.
 **Before running:** add the Round 2 data as an input dataset (any name; the notebook finds
 `train_cadences.npy`), and set **Accelerator: GPU T4** for the CNN. Internet is not needed.
 
-Steps: folds -> features (train, PKS-degraded train, test) -> adversarial check -> LightGBM ->
-first submission -> CNN on the global-time image -> blended submission. All outputs land in
-`/kaggle/working/signal-hunters/submissions` and `/kaggle/working/signal-hunters/oof`."""
+Steps: folds -> features (train, PKS-degraded train with gain jitter, test) -> LightGBM ->
+three CNNs on the global-time image -> second-level stack -> per-class bias -> final submission
+`submissions/11_stack5_bias.csv`. All outputs land in `/kaggle/working/signal-hunters/submissions`
+and `/kaggle/working/signal-hunters/oof`."""
 
 SETUP = """import glob, os
 hits = glob.glob('/kaggle/input/**/train_cadences.npy', recursive=True)
@@ -38,19 +39,18 @@ print(os.environ['SIG_DATA'], sorted(os.listdir(os.environ['SIG_DATA'])))
 !nvidia-smi -L; nproc"""
 
 RUNS = [
-    ("md", "## 1. Folds and features (about 3-5 minutes)"),
-    ("code", "!python scripts/make_folds.py\n!python scripts/build_features.py"),
-    ("md", "## 2. Does degraded train look like test? (adversarial AUC, 0.5 = identical)"),
-    ("code", "!python scripts/adversarial.py --train train\n!python scripts/adversarial.py --train train_deg"),
-    ("md", "## 3. LightGBM and the first submission\n\nDownload `submissions/01_lgbm.csv` from the output panel when this cell ends."),
-    ("code", "!python scripts/train_lgbm.py --name lgbm\n!python scripts/make_submission.py --models lgbm --out 01_lgbm"),
-    ("md", "## 4. CNN on the global-time image (GPU, about 30-45 minutes)"),
+    ("md", "## 1. Folds and features (train, PKS-degraded train with gain jitter, test)"),
+    ("code", "!python scripts/make_folds.py\n!python scripts/build_features.py --gain-jitter"),
+    ("md", "## 2. LightGBM on original + degraded train"),
+    ("code", "!python scripts/train_lgbm.py --name lgbm4"),
+    ("md", "## 3. CNNs on the global-time image (GPU, about 1 hour each)"),
     ("code", "!python scripts/train_cnn.py --name cnn"),
-    ("md", "## 5. Blends"),
-    ("code", "!python scripts/make_submission.py --models cnn --out cnn_only\n"
-             "!python scripts/make_submission.py --models lgbm cnn --weights 0.5 0.5 --out 02_blend\n"
-             "!python scripts/make_submission.py --models lgbm cnn --weights 0.5 0.5 --em 0.5 --out 03_blend_em"),
-    ("md", "## 6. Pack everything for download"),
+    ("code", "!python scripts/train_cnn.py --name cnn_s7 --seed 7 --epochs 18"),
+    ("code", "!python scripts/train_cnn.py --name cnn_lvl --levels --epochs 18"),
+    ("md", "## 4. Stack, per-class bias and the final submission"),
+    ("code", "!python scripts/stack.py --models lgbm4 cnn cnn_s7 cnn_lvl --features fit_ trk_ lvl_ --name stack5\n"
+             "!python scripts/make_submission.py --models stack5 --bias --out 11_stack5_bias"),
+    ("md", "## 5. Pack everything for download"),
     ("code", "!cd /kaggle/working && zip -qr outputs.zip signal-hunters/oof signal-hunters/submissions && ls -la /kaggle/working"),
 ]
 
