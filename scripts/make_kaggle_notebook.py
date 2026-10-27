@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = [
     "src/sig/data.py", "src/sig/prep.py", "src/sig/features.py",
     "scripts/make_folds.py", "scripts/build_features.py", "scripts/adversarial.py",
-    "scripts/train_lgbm.py", "scripts/train_cnn.py", "scripts/make_submission.py",
+    "scripts/train_lgbm.py", "scripts/train_cnn.py", "scripts/make_submission.py", "scripts/stack.py",
 ]
 
 INTRO = """# Signal Hunters - Team Cyclops (Hack4Hack 2026 Round 2)
