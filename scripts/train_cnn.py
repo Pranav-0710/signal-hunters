@@ -62,8 +62,24 @@ def to_image(x: np.ndarray, gaps: np.ndarray, levels: bool = False) -> np.ndarra
     return img
 
 
+def to_stacked(x: np.ndarray, gaps: np.ndarray, levels: bool = False) -> np.ndarray:
+    """uint8 cadences (n, 6, 16, 128) -> float16 (n, 7 or 13, 16, 128): the six panels as channels,
+    so the first convolution compares ON and OFF at the same row and channel. Then the six panel
+    brightness levels (with levels) and the slew gap, each as a constant channel."""
+    z, valid = normalize(x)
+    n = len(z)
+    extra = 7 if levels else 1
+    img = np.zeros((n, 6 + extra, N_ROWS, N_CHAN), np.float16)
+    img[:, :6] = np.clip(z, -6, 30)
+    if levels:
+        lvl = panel_levels(x)[[f"lvl_p{p}" for p in range(6)]].to_numpy() * LEVEL_SCALE
+        img[:, 6:12] = lvl[:, :, None, None] * valid[..., None]
+    img[:, -1] = (gaps[:, None, None] - 4.5) / 1.5
+    return img
+
+
 def _job(args: tuple) -> np.ndarray:
-    name, start, stop, mode, seed, levels = args
+    name, start, stop, mode, seed, levels, layout = args
     sp = load_split(name)
     x = np.asarray(sp.x[start:stop])
     if mode == "fixed":
@@ -73,12 +89,13 @@ def _job(args: tuple) -> np.ndarray:
         d = degrade(x, rng, gain_jitter=levels)
         pick = rng.random(len(x)) < P_DEGRADE
         x = np.where(pick[:, None, None, None], d, x)
-    return to_image(x, sp.gaps[start:stop], levels)
+    return (to_stacked if layout == "stacked" else to_image)(x, sp.gaps[start:stop], levels)
 
 
-def images(pool: ProcessPoolExecutor, name: str, mode: str, seed: int = 0, levels: bool = False) -> np.ndarray:
+def images(pool: ProcessPoolExecutor, name: str, mode: str, seed: int = 0, levels: bool = False,
+           layout: str = "global") -> np.ndarray:
     n = len(load_split(name).meta)
-    jobs = [(name, a, min(a + CHUNK, n), mode, seed, levels) for a in range(0, n, CHUNK)]
+    jobs = [(name, a, min(a + CHUNK, n), mode, seed, levels, layout) for a in range(0, n, CHUNK)]
     return np.concatenate(list(pool.map(_job, jobs)))
 
 
@@ -117,7 +134,7 @@ class Pretrained(nn.Module):
         self.net = timm.create_model(arch, pretrained=True, in_chans=in_ch, num_classes=len(LABELS), drop_rate=0.3)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.shape[-1] != self.size:
+        if tuple(x.shape[-2:]) != (self.size, self.size):
             x = F.interpolate(x, size=(self.size, self.size), mode="bilinear", align_corners=False)
         return self.net(x)
 
@@ -144,6 +161,8 @@ def main() -> None:
     ap.add_argument("--levels", action="store_true", help="add the panel brightness channel and PKS gain jitter")
     ap.add_argument("--arch", default="small", help="'small' (Net above) or a timm model, e.g. efficientnet_b0")
     ap.add_argument("--size", type=int, default=256, help="input size for a timm model")
+    ap.add_argument("--layout", choices=["global", "stacked"], default="global",
+                    help="global-time image, or the six panels as channels (timm models only)")
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--limit-batches", type=int, default=None, help="smoke test: batches per epoch")
     args = ap.parse_args()
@@ -155,8 +174,9 @@ def main() -> None:
     pool = ProcessPoolExecutor(CPUS)
     print("device:", DEVICE, " cpus:", CPUS, flush=True)
     (ROOT / "oof").mkdir(exist_ok=True)
-    val_img = images(pool, "train", "fixed", levels=args.levels)
-    test_img = images(pool, "test", "none", levels=args.levels)
+    assert args.layout == "global" or args.arch != "small", "the stacked layout needs a timm --arch"
+    val_img = images(pool, "train", "fixed", levels=args.levels, layout=args.layout)
+    test_img = images(pool, "test", "none", levels=args.levels, layout=args.layout)
     oof = np.full((len(y), len(LABELS)), np.nan)
     test = np.zeros((len(test_img), len(LABELS)))
 
@@ -165,7 +185,7 @@ def main() -> None:
         rng = np.random.default_rng(args.seed + k)
         fit = np.where(folds != k)[0]
         va = np.where(folds == k)[0]
-        in_ch = 3 if args.levels else 2
+        in_ch = val_img.shape[1]
         model = (Net(in_ch) if args.arch == "small" else Pretrained(args.arch, in_ch, args.size)).to(DEVICE)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
         steps = args.epochs * (args.limit_batches or int(np.ceil(len(fit) / 128)))
@@ -173,7 +193,8 @@ def main() -> None:
         scaler = torch.cuda.amp.GradScaler(enabled=amp)
         for ep in range(args.epochs):
             t = time.time()
-            ep_img = images(pool, "train", "random", seed=args.seed * 1000 + k * 100 + ep, levels=args.levels)
+            ep_img = images(pool, "train", "random", seed=args.seed * 1000 + k * 100 + ep, levels=args.levels,
+                            layout=args.layout)
             model.train()
             order = rng.permutation(fit)
             n_b = args.limit_batches or int(np.ceil(len(order) / 128))
