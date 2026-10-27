@@ -58,11 +58,15 @@ RUNS = [
     ("code", "!python scripts/stack.py --models lgbm4 cnn cnn_s7 cnn_lvl eff_lvl --features fit_ trk_ lvl_ --name stack6\n"
              "!python scripts/make_submission.py --models stack6 --bias --out 16_stack6_bias\n"
              "!python scripts/make_submission.py --models stack6 --bias --shift 0.5 --out 17_stack6_bias_shift05"),
-    ("code", "!python scripts/train_cnn.py --arch efficientnet_b2 --levels --lr 1e-3 --epochs 14 --name effb2_lvl"),
-    ("code", "!python scripts/train_cnn.py --arch efficientnet_b0 --levels --lr 1e-3 --epochs 12 --seed 7 --name eff_lvl_s7"),
-    ("md", "## 6. Final stack of everything"),
-    ("code", "!python scripts/stack.py --models lgbm4 cnn cnn_s7 cnn_lvl eff_lvl effb2_lvl eff_lvl_s7 "
-             "--features fit_ trk_ lvl_ --name stack7\n"
+    ("code", "!python scripts/train_cnn.py --arch efficientnet_b2 --size 224 --levels --lr 1e-3 --epochs 14 --name effb2_lvl"),
+    ("code", "!python scripts/train_cnn.py --arch efficientnet_b0 --levels --lr 1e-3 --epochs 20 --seed 7 --name eff_lvl_e20"),
+    ("md", "## 6. Final stack of everything (a model whose run failed is left out and reported)"),
+    ("code", "import subprocess\n"
+             "models = [m for m in ['lgbm4', 'cnn', 'cnn_s7', 'cnn_lvl', 'eff_lvl', 'effb2_lvl', 'eff_lvl_e20']\n"
+             "          if os.path.exists(f'oof/{m}_oof.csv') and os.path.exists(f'oof/{m}_test.csv')]\n"
+             "print('stacking', models)\n"
+             "subprocess.run(['python', 'scripts/stack.py', '--models', *models, '--features', 'fit_', 'trk_', 'lvl_',\n"
+             "                '--name', 'stack7'], check=True)\n"
              "!python scripts/make_submission.py --models stack7 --bias --out 18_stack7_bias\n"
              "!python scripts/make_submission.py --models stack7 --bias --shift 0.5 --out 19_stack7_bias_shift05"),
     ("md", "## 7. Pack everything for download"),
