@@ -4,7 +4,7 @@ Every coding agent working in this repo follows these rules, whatever tool it is
 
 ## Project context
 
-Team Cyclops, ML Challenge Hack4Hack 2026 Round 2 (Signal Hunters). Classify each of 10,000 test ON/OFF radio cadences (6 panels x 16 time steps x 128 channels) into one of 9 labels. Metric: macro-F1. Round closes 2026-10-27 11:59 PM IST. Read `docs/PROBLEM_STATEMENT.md` first.
+Team Cyclops, ML Challenge Hack4Hack 2026 Round 2 (Signal Hunters). Classify each of 10,000 test ON/OFF radio cadences (6 panels x 16 time steps x 128 channels) into one of 9 labels. Metric: macro-F1. Round closes 2026-10-28 10:00 AM IST (extended from 27 Oct 11:59 PM; 10 uploads in total). Read `docs/PROBLEM_STATEMENT.md` first.
 
 Stack: Python, numpy, pandas, scipy, scikit-learn, LightGBM, PyTorch (CPU).
 
