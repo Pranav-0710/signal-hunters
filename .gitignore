@@ -1,0 +1,10 @@
+data/
+*.npy
+*.zip
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+.env
+models/
+oof/*.npy
