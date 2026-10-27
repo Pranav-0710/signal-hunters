@@ -21,16 +21,21 @@ SPIKE = 64
 
 PKS_GAMMA_SHAPE = 7.7     # extra multiplicative noise that widens GBT byte MAD 13.3 to the PKS 18.5
 PKS_EXTRA_DROP = 0.0023   # PKS drops 0.38% of rows, GBT 0.15%
+PKS_GAIN_JITTER = 0.062   # extra per-panel gain spread in log2 power: OFF-panel level std 0.049 (GBT) vs 0.079 (PKS)
 
 
-def degrade(x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+def degrade(x: np.ndarray, rng: np.random.Generator, gain_jitter: bool = False) -> np.ndarray:
     """Make GBT cadences look like PKS noise: multiply linear power by Gamma(k)/k noise, drop rows.
 
     Multiplying power by an independent gamma variable is what averaging fewer spectra does, so
     the noise gets wider and gains the negative log-domain skew seen in PKS, and signals fade with it.
+    gain_jitter adds the larger panel-to-panel gain changes of PKS (off by default, so earlier models
+    rebuild unchanged).
     """
     g = rng.gamma(PKS_GAMMA_SHAPE, 1 / PKS_GAMMA_SHAPE, size=x.shape).astype(np.float32)
     v = x.astype(np.float32) + SCALE * np.log2(g)
+    if gain_jitter:
+        v += SCALE * rng.normal(0, PKS_GAIN_JITTER, size=x.shape[:2] + (1, 1)).astype(np.float32)
     out = np.clip(np.round(v), 1, 255).astype(np.uint8)
     drop = rng.random(x.shape[:3]) < PKS_EXTRA_DROP
     out[(x == 0) | drop[..., None]] = 0

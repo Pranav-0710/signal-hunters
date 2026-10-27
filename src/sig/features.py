@@ -267,6 +267,31 @@ def cadence_features(z: np.ndarray, valid: np.ndarray, gaps: np.ndarray) -> pd.D
     return pd.DataFrame(cols)
 
 
+def panel_levels(x: np.ndarray) -> pd.DataFrame:
+    """Overall brightness of each panel from the raw bytes (n, 6, 16, 128), in log2 power.
+
+    Row-median normalization removes it, but a scintillating star (and a pulsar) lifts the whole
+    ON panel. Levels are relative to the cadence mean; ON-OFF contrasts are also given in units
+    of the spread between the three OFF panels, which absorbs the telescope's gain jitter.
+    """
+    f = x.astype(np.float32) / 24.0
+    valid = x.max(axis=3) > 0
+    rows = np.where(valid, np.median(f, axis=3), np.nan)                                  # (n, 6, 16)
+    lvl = np.nanmedian(rows, axis=2)
+    lvl = np.nan_to_num(lvl - np.nanmean(lvl, axis=1, keepdims=True))
+    on, off = lvl[:, ON], lvl[:, ~ON]
+    spread = off.std(1) + 0.02
+    row_std = np.nanstd(rows - lvl[..., None], axis=2)
+    cols: dict = {}
+    _panel_block("lvl", lvl, cols)
+    cols["lvl_on_min_off_max"] = on.min(1) - off.max(1)
+    cols["lvl_on_off_z"] = (on.mean(1) - off.mean(1)) / spread
+    cols["lvl_on_min_off_max_z"] = cols["lvl_on_min_off_max"] / spread
+    cols["lvl_off_spread"] = spread
+    _panel_block("lvl_rowstd", np.nan_to_num(row_std), cols)
+    return pd.DataFrame(cols)
+
+
 def _corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Pearson correlation over the last two axes, per (cadence, panel)."""
     a = a - a.mean((-2, -1), keepdims=True)
