@@ -9,6 +9,10 @@ Training augmentation: fresh PKS-style degradation (prob 0.75) and a frequency f
 it flips the drift sign, which every class allows). Validation uses the fixed degraded copy
 made by the same seeds as scripts/build_features.py. Test uses flip TTA.
     python scripts/train_cnn.py --folds 0 1 2 3 4 --name cnn
+
+--arch swaps the small Net for an ImageNet-pretrained timm backbone (mixed precision, needs
+internet on the first run to fetch the public weights):
+    python scripts/train_cnn.py --arch efficientnet_b0 --levels --lr 1e-3 --epochs 12 --name eff_lvl
 """
 
 import argparse
@@ -102,10 +106,26 @@ class Net(nn.Module):
         return self.head(x)
 
 
-def predict(model: nn.Module, img: np.ndarray, tta: bool = True) -> np.ndarray:
+class Pretrained(nn.Module):
+    """A timm backbone with public ImageNet weights (allowed by rule 02); the 128 x 128 image is
+    resized to size x size on the GPU. timm adapts the pretrained stem to 2 or 3 input channels."""
+
+    def __init__(self, arch: str, in_ch: int, size: int) -> None:
+        super().__init__()
+        import timm
+        self.size = size
+        self.net = timm.create_model(arch, pretrained=True, in_chans=in_ch, num_classes=len(LABELS), drop_rate=0.3)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.shape[-1] != self.size:
+            x = F.interpolate(x, size=(self.size, self.size), mode="bilinear", align_corners=False)
+        return self.net(x)
+
+
+def predict(model: nn.Module, img: np.ndarray, tta: bool = True, amp: bool = False) -> np.ndarray:
     model.eval()
     out = []
-    with torch.no_grad():
+    with torch.no_grad(), torch.autocast(DEVICE.type, enabled=amp):
         for a in range(0, len(img), 256):
             xb = torch.from_numpy(img[a:a + 256].astype(np.float32)).to(DEVICE)
             p = F.softmax(model(xb).float(), 1)
@@ -122,8 +142,12 @@ def main() -> None:
     ap.add_argument("--name", default="cnn")
     ap.add_argument("--seed", type=int, default=SEED)
     ap.add_argument("--levels", action="store_true", help="add the panel brightness channel and PKS gain jitter")
+    ap.add_argument("--arch", default="small", help="'small' (Net above) or a timm model, e.g. efficientnet_b0")
+    ap.add_argument("--size", type=int, default=256, help="input size for a timm model")
+    ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--limit-batches", type=int, default=None, help="smoke test: batches per epoch")
     args = ap.parse_args()
+    amp = args.arch != "small" and DEVICE.type == "cuda"
 
     tr, te = load_split("train"), load_split("test")
     y, folds = tr.y, load_folds()
@@ -141,10 +165,12 @@ def main() -> None:
         rng = np.random.default_rng(args.seed + k)
         fit = np.where(folds != k)[0]
         va = np.where(folds == k)[0]
-        model = Net(3 if args.levels else 2).to(DEVICE)
-        opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
+        in_ch = 3 if args.levels else 2
+        model = (Net(in_ch) if args.arch == "small" else Pretrained(args.arch, in_ch, args.size)).to(DEVICE)
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
         steps = args.epochs * (args.limit_batches or int(np.ceil(len(fit) / 128)))
-        sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=2e-3, total_steps=steps, pct_start=0.15)
+        sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=steps, pct_start=0.15)
+        scaler = torch.cuda.amp.GradScaler(enabled=amp)
         for ep in range(args.epochs):
             t = time.time()
             ep_img = images(pool, "train", "random", seed=args.seed * 1000 + k * 100 + ep, levels=args.levels)
@@ -158,17 +184,19 @@ def main() -> None:
                 flip = torch.from_numpy(rng.random(len(idx)) < 0.5)
                 xb[flip] = torch.flip(xb[flip], [3])
                 xb, yb = xb.to(DEVICE), torch.from_numpy(y[idx]).to(DEVICE)
-                loss = F.cross_entropy(model(xb), yb, weight=w, label_smoothing=0.05)
+                with torch.autocast(DEVICE.type, enabled=amp):
+                    loss = F.cross_entropy(model(xb).float(), yb, weight=w, label_smoothing=0.05)
                 opt.zero_grad()
-                loss.backward()
-                opt.step()
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
                 sched.step()
                 loss_sum += loss.item()
-            p = predict(model, val_img[va], tta=False)
+            p = predict(model, val_img[va], tta=False, amp=amp)
             print(f"fold {k} ep {ep}: loss {loss_sum / n_b:.4f}  val F1 "
                   f"{f1_score(y[va], p.argmax(1), average='macro'):.4f}  {time.time() - t:.0f}s", flush=True)
-        oof[va] = predict(model, val_img[va])
-        test += predict(model, test_img) / len(args.folds)
+        oof[va] = predict(model, val_img[va], amp=amp)
+        test += predict(model, test_img, amp=amp) / len(args.folds)
         print(f"fold {k} TTA val F1 {f1_score(y[va], oof[va].argmax(1), average='macro'):.4f}", flush=True)
         torch.save(model.state_dict(), ROOT / f"oof/{args.name}_f{k}.pt")
 
