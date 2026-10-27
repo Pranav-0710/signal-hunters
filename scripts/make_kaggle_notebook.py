@@ -20,11 +20,13 @@ INTRO = """# Signal Hunters - Team Cyclops (Hack4Hack 2026 Round 2)
 Runs the code from the team repository end to end on Kaggle.
 
 **Before running:** add the Round 2 data as an input dataset (any name; the notebook finds
-`train_cadences.npy`), and set **Accelerator: GPU T4** for the CNN. Internet is not needed.
+`train_cadences.npy`), set **Accelerator: GPU T4** and turn **Internet on** (the pretrained
+backbones download public ImageNet weights through timm). A full run takes about 8 hours.
 
 Steps: folds -> features (train, PKS-degraded train with gain jitter, test) -> LightGBM ->
-three CNNs on the global-time image -> second-level stack -> per-class bias -> final submission
-`submissions/11_stack5_bias.csv`. All outputs land in `/kaggle/working/signal-hunters/submissions`
+three small CNNs and three ImageNet-pretrained EfficientNets on the global-time image ->
+second-level stack -> per-class bias -> submissions. The final file is
+`submissions/18_stack7_bias.csv`. All outputs land in `/kaggle/working/signal-hunters/submissions`
 and `/kaggle/working/signal-hunters/oof`."""
 
 SETUP = """import glob, os
@@ -47,11 +49,23 @@ RUNS = [
     ("code", "!python scripts/train_cnn.py --name cnn"),
     ("code", "!python scripts/train_cnn.py --name cnn_s7 --seed 7 --epochs 18"),
     ("code", "!python scripts/train_cnn.py --name cnn_lvl --levels --epochs 18"),
-    ("md", "## 4. Stack, per-class bias and the final submission"),
+    ("md", "## 4. Stack of the small models (upload 04)"),
     ("code", "!python scripts/stack.py --models lgbm4 cnn cnn_s7 cnn_lvl --features fit_ trk_ lvl_ --name stack5\n"
              "!python scripts/make_submission.py --models stack5 --bias --out 11_stack5_bias\n"
              "!python scripts/make_submission.py --models stack5 --bias --shift 0.5 --out 14_stack5_bias_shift05"),
-    ("md", "## 5. Pack everything for download"),
+    ("md", "## 5. ImageNet-pretrained EfficientNets (GPU, about 70 minutes for B0, 2 hours for B2)"),
+    ("code", "!python scripts/train_cnn.py --arch efficientnet_b0 --levels --lr 1e-3 --epochs 12 --name eff_lvl"),
+    ("code", "!python scripts/stack.py --models lgbm4 cnn cnn_s7 cnn_lvl eff_lvl --features fit_ trk_ lvl_ --name stack6\n"
+             "!python scripts/make_submission.py --models stack6 --bias --out 16_stack6_bias\n"
+             "!python scripts/make_submission.py --models stack6 --bias --shift 0.5 --out 17_stack6_bias_shift05"),
+    ("code", "!python scripts/train_cnn.py --arch efficientnet_b2 --levels --lr 1e-3 --epochs 14 --name effb2_lvl"),
+    ("code", "!python scripts/train_cnn.py --arch efficientnet_b0 --levels --lr 1e-3 --epochs 12 --seed 7 --name eff_lvl_s7"),
+    ("md", "## 6. Final stack of everything"),
+    ("code", "!python scripts/stack.py --models lgbm4 cnn cnn_s7 cnn_lvl eff_lvl effb2_lvl eff_lvl_s7 "
+             "--features fit_ trk_ lvl_ --name stack7\n"
+             "!python scripts/make_submission.py --models stack7 --bias --out 18_stack7_bias\n"
+             "!python scripts/make_submission.py --models stack7 --bias --shift 0.5 --out 19_stack7_bias_shift05"),
+    ("md", "## 7. Pack everything for download"),
     ("code", "!cd /kaggle/working && zip -qr outputs.zip signal-hunters/oof signal-hunters/submissions && ls -la /kaggle/working"),
 ]
 
