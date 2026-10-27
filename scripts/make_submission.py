@@ -16,6 +16,9 @@ Saerens-Latinne-Decaestecker EM (no labels involved), then multiplies the poster
 macro-F1 (macro-F1 rewards trading a little accuracy on easy classes for recall on hard ones).
 The gain is first measured honestly: offsets tuned on 4 folds, scored on the 5th. Test uses
 offsets tuned on all OOF rows.
+
+--shift ALPHA is meant for use with --bias: the OOF-tuned offsets carry the train class mix, so
+this adds ALPHA * log(EM test prior / train class share) to move them toward the test mix instead.
 """
 
 import argparse
@@ -80,6 +83,7 @@ def main() -> None:
     ap.add_argument("--weights", nargs="+", type=float, default=None)
     ap.add_argument("--em", type=float, default=0.0)
     ap.add_argument("--bias", action="store_true", help="tune per-class log offsets on OOF macro-F1")
+    ap.add_argument("--shift", type=float, default=0.0, help="move offsets from the train mix toward the EM test mix")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     weights = args.weights or [1 / len(args.models)] * len(args.models)
@@ -107,6 +111,9 @@ def main() -> None:
     print("EM test prior:", dict(zip(LABELS, prior.round(3))))
     if args.em:
         p = p * (prior * len(LABELS)) ** args.em
+    if args.shift:
+        bias = bias + args.shift * np.log(prior / (np.bincount(y, minlength=len(LABELS)) / len(y)))
+        print("offsets after shift:", dict(zip(LABELS, bias.round(2))))
     pred = np.array(LABELS)[(np.log(np.clip(p, 1e-9, 1)) + bias).argmax(1)]
 
     sub = pd.DataFrame({"id": ids, "label": pred})

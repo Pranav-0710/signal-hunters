@@ -49,7 +49,8 @@ RUNS = [
     ("code", "!python scripts/train_cnn.py --name cnn_lvl --levels --epochs 18"),
     ("md", "## 4. Stack, per-class bias and the final submission"),
     ("code", "!python scripts/stack.py --models lgbm4 cnn cnn_s7 cnn_lvl --features fit_ trk_ lvl_ --name stack5\n"
-             "!python scripts/make_submission.py --models stack5 --bias --out 11_stack5_bias"),
+             "!python scripts/make_submission.py --models stack5 --bias --out 11_stack5_bias\n"
+             "!python scripts/make_submission.py --models stack5 --bias --shift 0.5 --out 14_stack5_bias_shift05"),
     ("md", "## 5. Pack everything for download"),
     ("code", "!cd /kaggle/working && zip -qr outputs.zip signal-hunters/oof signal-hunters/submissions && ls -la /kaggle/working"),
 ]
