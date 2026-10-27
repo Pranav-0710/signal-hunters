@@ -26,46 +26,55 @@ from sklearn.metrics import f1_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sig.data import CPUS, LABELS, N_CHAN, N_ROWS, ON, ROOT, SEED, load_folds, load_split  # noqa: E402
+from sig.features import panel_levels  # noqa: E402
 from sig.prep import degrade, normalize  # noqa: E402
 
 H = 128
 CHUNK = 250
 P_DEGRADE = 0.75
+LEVEL_SCALE = 8.0
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_num_threads(CPUS)
 
 
-def to_image(x: np.ndarray, gaps: np.ndarray) -> np.ndarray:
-    """uint8 cadences (n, 6, 16, 128) -> float16 images (n, 2, 128, 128)."""
+def to_image(x: np.ndarray, gaps: np.ndarray, levels: bool = False) -> np.ndarray:
+    """uint8 cadences (n, 6, 16, 128) -> float16 images (n, 2 or 3, 128, 128).
+
+    With levels, channel 2 holds each panel's overall brightness (log2 power relative to the
+    cadence mean, x8), which the row normalization removes but a scintillating star raises.
+    """
     z, valid = normalize(x)
     n = len(z)
-    img = np.zeros((n, 2, H, N_CHAN), np.float16)
+    img = np.zeros((n, 3 if levels else 2, H, N_CHAN), np.float16)
+    lvl = panel_levels(x)[[f"lvl_p{p}" for p in range(6)]].to_numpy() * LEVEL_SCALE if levels else None
     sign = np.where(ON, 1.0, -1.0)
     for i in range(n):
         for p in range(6):
             r0 = p * (N_ROWS + gaps[i])
             img[i, 0, r0:r0 + N_ROWS] = np.clip(z[i, p], -6, 30)
             img[i, 1, r0:r0 + N_ROWS] = sign[p] * valid[i, p][:, None]
+            if levels:
+                img[i, 2, r0:r0 + N_ROWS] = lvl[i, p] * valid[i, p][:, None]
     return img
 
 
 def _job(args: tuple) -> np.ndarray:
-    name, start, stop, mode, seed = args
+    name, start, stop, mode, seed, levels = args
     sp = load_split(name)
     x = np.asarray(sp.x[start:stop])
     if mode == "fixed":
-        x = degrade(x, np.random.default_rng([SEED, start]))
+        x = degrade(x, np.random.default_rng([SEED, start]), gain_jitter=levels)
     elif mode == "random":
         rng = np.random.default_rng([seed, start])
-        d = degrade(x, rng)
+        d = degrade(x, rng, gain_jitter=levels)
         pick = rng.random(len(x)) < P_DEGRADE
         x = np.where(pick[:, None, None, None], d, x)
-    return to_image(x, sp.gaps[start:stop])
+    return to_image(x, sp.gaps[start:stop], levels)
 
 
-def images(pool: ProcessPoolExecutor, name: str, mode: str, seed: int = 0) -> np.ndarray:
+def images(pool: ProcessPoolExecutor, name: str, mode: str, seed: int = 0, levels: bool = False) -> np.ndarray:
     n = len(load_split(name).meta)
-    jobs = [(name, a, min(a + CHUNK, n), mode, seed) for a in range(0, n, CHUNK)]
+    jobs = [(name, a, min(a + CHUNK, n), mode, seed, levels) for a in range(0, n, CHUNK)]
     return np.concatenate(list(pool.map(_job, jobs)))
 
 
@@ -77,9 +86,9 @@ def block(cin: int, cout: int) -> nn.Sequential:
 
 
 class Net(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, in_ch: int = 2) -> None:
         super().__init__()
-        self.stem = nn.Sequential(nn.Conv2d(2, 32, 3, padding=1, bias=False), nn.BatchNorm2d(32), nn.ReLU(inplace=True))
+        self.stem = nn.Sequential(nn.Conv2d(in_ch, 32, 3, padding=1, bias=False), nn.BatchNorm2d(32), nn.ReLU(inplace=True))
         self.b1, self.b2, self.b3, self.b4 = block(32, 48), block(48, 96), block(96, 160), block(160, 256)
         self.head = nn.Sequential(nn.Dropout(0.3), nn.Linear(512, len(LABELS)))
 
@@ -112,6 +121,7 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=14)
     ap.add_argument("--name", default="cnn")
     ap.add_argument("--seed", type=int, default=SEED)
+    ap.add_argument("--levels", action="store_true", help="add the panel brightness channel and PKS gain jitter")
     ap.add_argument("--limit-batches", type=int, default=None, help="smoke test: batches per epoch")
     args = ap.parse_args()
 
@@ -121,8 +131,8 @@ def main() -> None:
     pool = ProcessPoolExecutor(CPUS)
     print("device:", DEVICE, " cpus:", CPUS, flush=True)
     (ROOT / "oof").mkdir(exist_ok=True)
-    val_img = images(pool, "train", "fixed")
-    test_img = images(pool, "test", "none")
+    val_img = images(pool, "train", "fixed", levels=args.levels)
+    test_img = images(pool, "test", "none", levels=args.levels)
     oof = np.full((len(y), len(LABELS)), np.nan)
     test = np.zeros((len(test_img), len(LABELS)))
 
@@ -131,13 +141,13 @@ def main() -> None:
         rng = np.random.default_rng(args.seed + k)
         fit = np.where(folds != k)[0]
         va = np.where(folds == k)[0]
-        model = Net().to(DEVICE)
+        model = Net(3 if args.levels else 2).to(DEVICE)
         opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
         steps = args.epochs * (args.limit_batches or int(np.ceil(len(fit) / 128)))
         sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=2e-3, total_steps=steps, pct_start=0.15)
         for ep in range(args.epochs):
             t = time.time()
-            ep_img = images(pool, "train", "random", seed=args.seed * 1000 + k * 100 + ep)
+            ep_img = images(pool, "train", "random", seed=args.seed * 1000 + k * 100 + ep, levels=args.levels)
             model.train()
             order = rng.permutation(fit)
             n_b = args.limit_batches or int(np.ceil(len(order) / 128))
