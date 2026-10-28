@@ -9,6 +9,10 @@ Training augmentation: fresh PKS-style degradation (prob 0.75) and a frequency f
 it flips the drift sign, which every class allows). Validation uses the fixed degraded copy
 made by the same seeds as scripts/build_features.py. Test uses flip TTA.
     python scripts/train_cnn.py --folds 0 1 2 3 4 --name cnn
+
+--arch swaps the small Net for an ImageNet-pretrained timm backbone (mixed precision, needs
+internet on the first run to fetch the public weights):
+    python scripts/train_cnn.py --arch efficientnet_b0 --levels --lr 1e-3 --epochs 12 --name eff_lvl
 """
 
 import argparse
@@ -26,46 +30,72 @@ from sklearn.metrics import f1_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sig.data import CPUS, LABELS, N_CHAN, N_ROWS, ON, ROOT, SEED, load_folds, load_split  # noqa: E402
+from sig.features import panel_levels  # noqa: E402
 from sig.prep import degrade, normalize  # noqa: E402
 
 H = 128
 CHUNK = 250
 P_DEGRADE = 0.75
+LEVEL_SCALE = 8.0
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_num_threads(CPUS)
 
 
-def to_image(x: np.ndarray, gaps: np.ndarray) -> np.ndarray:
-    """uint8 cadences (n, 6, 16, 128) -> float16 images (n, 2, 128, 128)."""
+def to_image(x: np.ndarray, gaps: np.ndarray, levels: bool = False) -> np.ndarray:
+    """uint8 cadences (n, 6, 16, 128) -> float16 images (n, 2 or 3, 128, 128).
+
+    With levels, channel 2 holds each panel's overall brightness (log2 power relative to the
+    cadence mean, x8), which the row normalization removes but a scintillating star raises.
+    """
     z, valid = normalize(x)
     n = len(z)
-    img = np.zeros((n, 2, H, N_CHAN), np.float16)
+    img = np.zeros((n, 3 if levels else 2, H, N_CHAN), np.float16)
+    lvl = panel_levels(x)[[f"lvl_p{p}" for p in range(6)]].to_numpy() * LEVEL_SCALE if levels else None
     sign = np.where(ON, 1.0, -1.0)
     for i in range(n):
         for p in range(6):
             r0 = p * (N_ROWS + gaps[i])
             img[i, 0, r0:r0 + N_ROWS] = np.clip(z[i, p], -6, 30)
             img[i, 1, r0:r0 + N_ROWS] = sign[p] * valid[i, p][:, None]
+            if levels:
+                img[i, 2, r0:r0 + N_ROWS] = lvl[i, p] * valid[i, p][:, None]
+    return img
+
+
+def to_stacked(x: np.ndarray, gaps: np.ndarray, levels: bool = False) -> np.ndarray:
+    """uint8 cadences (n, 6, 16, 128) -> float16 (n, 7 or 13, 16, 128): the six panels as channels,
+    so the first convolution compares ON and OFF at the same row and channel. Then the six panel
+    brightness levels (with levels) and the slew gap, each as a constant channel."""
+    z, valid = normalize(x)
+    n = len(z)
+    extra = 7 if levels else 1
+    img = np.zeros((n, 6 + extra, N_ROWS, N_CHAN), np.float16)
+    img[:, :6] = np.clip(z, -6, 30)
+    if levels:
+        lvl = panel_levels(x)[[f"lvl_p{p}" for p in range(6)]].to_numpy() * LEVEL_SCALE
+        img[:, 6:12] = lvl[:, :, None, None] * valid[..., None]
+    img[:, -1] = (gaps[:, None, None] - 4.5) / 1.5
     return img
 
 
 def _job(args: tuple) -> np.ndarray:
-    name, start, stop, mode, seed = args
+    name, start, stop, mode, seed, levels, layout = args
     sp = load_split(name)
     x = np.asarray(sp.x[start:stop])
     if mode == "fixed":
-        x = degrade(x, np.random.default_rng([SEED, start]))
+        x = degrade(x, np.random.default_rng([SEED, start]), gain_jitter=levels)
     elif mode == "random":
         rng = np.random.default_rng([seed, start])
-        d = degrade(x, rng)
+        d = degrade(x, rng, gain_jitter=levels)
         pick = rng.random(len(x)) < P_DEGRADE
         x = np.where(pick[:, None, None, None], d, x)
-    return to_image(x, sp.gaps[start:stop])
+    return (to_stacked if layout == "stacked" else to_image)(x, sp.gaps[start:stop], levels)
 
 
-def images(pool: ProcessPoolExecutor, name: str, mode: str, seed: int = 0) -> np.ndarray:
+def images(pool: ProcessPoolExecutor, name: str, mode: str, seed: int = 0, levels: bool = False,
+           layout: str = "global") -> np.ndarray:
     n = len(load_split(name).meta)
-    jobs = [(name, a, min(a + CHUNK, n), mode, seed) for a in range(0, n, CHUNK)]
+    jobs = [(name, a, min(a + CHUNK, n), mode, seed, levels, layout) for a in range(0, n, CHUNK)]
     return np.concatenate(list(pool.map(_job, jobs)))
 
 
@@ -77,9 +107,9 @@ def block(cin: int, cout: int) -> nn.Sequential:
 
 
 class Net(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, in_ch: int = 2) -> None:
         super().__init__()
-        self.stem = nn.Sequential(nn.Conv2d(2, 32, 3, padding=1, bias=False), nn.BatchNorm2d(32), nn.ReLU(inplace=True))
+        self.stem = nn.Sequential(nn.Conv2d(in_ch, 32, 3, padding=1, bias=False), nn.BatchNorm2d(32), nn.ReLU(inplace=True))
         self.b1, self.b2, self.b3, self.b4 = block(32, 48), block(48, 96), block(96, 160), block(160, 256)
         self.head = nn.Sequential(nn.Dropout(0.3), nn.Linear(512, len(LABELS)))
 
@@ -93,10 +123,26 @@ class Net(nn.Module):
         return self.head(x)
 
 
-def predict(model: nn.Module, img: np.ndarray, tta: bool = True) -> np.ndarray:
+class Pretrained(nn.Module):
+    """A timm backbone with public ImageNet weights (allowed by rule 02); the 128 x 128 image is
+    resized to size x size on the GPU. timm adapts the pretrained stem to 2 or 3 input channels."""
+
+    def __init__(self, arch: str, in_ch: int, size: int) -> None:
+        super().__init__()
+        import timm
+        self.size = size
+        self.net = timm.create_model(arch, pretrained=True, in_chans=in_ch, num_classes=len(LABELS), drop_rate=0.3)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if tuple(x.shape[-2:]) != (self.size, self.size):
+            x = F.interpolate(x, size=(self.size, self.size), mode="bilinear", align_corners=False)
+        return self.net(x)
+
+
+def predict(model: nn.Module, img: np.ndarray, tta: bool = True, amp: bool = False) -> np.ndarray:
     model.eval()
     out = []
-    with torch.no_grad():
+    with torch.no_grad(), torch.autocast(DEVICE.type, enabled=amp):
         for a in range(0, len(img), 256):
             xb = torch.from_numpy(img[a:a + 256].astype(np.float32)).to(DEVICE)
             p = F.softmax(model(xb).float(), 1)
@@ -112,8 +158,15 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=14)
     ap.add_argument("--name", default="cnn")
     ap.add_argument("--seed", type=int, default=SEED)
+    ap.add_argument("--levels", action="store_true", help="add the panel brightness channel and PKS gain jitter")
+    ap.add_argument("--arch", default="small", help="'small' (Net above) or a timm model, e.g. efficientnet_b0")
+    ap.add_argument("--size", type=int, default=256, help="input size for a timm model")
+    ap.add_argument("--layout", choices=["global", "stacked"], default="global",
+                    help="global-time image, or the six panels as channels (timm models only)")
+    ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--limit-batches", type=int, default=None, help="smoke test: batches per epoch")
     args = ap.parse_args()
+    amp = args.arch != "small" and DEVICE.type == "cuda"
 
     tr, te = load_split("train"), load_split("test")
     y, folds = tr.y, load_folds()
@@ -121,8 +174,9 @@ def main() -> None:
     pool = ProcessPoolExecutor(CPUS)
     print("device:", DEVICE, " cpus:", CPUS, flush=True)
     (ROOT / "oof").mkdir(exist_ok=True)
-    val_img = images(pool, "train", "fixed")
-    test_img = images(pool, "test", "none")
+    assert args.layout == "global" or args.arch != "small", "the stacked layout needs a timm --arch"
+    val_img = images(pool, "train", "fixed", levels=args.levels, layout=args.layout)
+    test_img = images(pool, "test", "none", levels=args.levels, layout=args.layout)
     oof = np.full((len(y), len(LABELS)), np.nan)
     test = np.zeros((len(test_img), len(LABELS)))
 
@@ -131,13 +185,16 @@ def main() -> None:
         rng = np.random.default_rng(args.seed + k)
         fit = np.where(folds != k)[0]
         va = np.where(folds == k)[0]
-        model = Net().to(DEVICE)
-        opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
+        in_ch = val_img.shape[1]
+        model = (Net(in_ch) if args.arch == "small" else Pretrained(args.arch, in_ch, args.size)).to(DEVICE)
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
         steps = args.epochs * (args.limit_batches or int(np.ceil(len(fit) / 128)))
-        sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=2e-3, total_steps=steps, pct_start=0.15)
+        sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=steps, pct_start=0.15)
+        scaler = torch.cuda.amp.GradScaler(enabled=amp)
         for ep in range(args.epochs):
             t = time.time()
-            ep_img = images(pool, "train", "random", seed=args.seed * 1000 + k * 100 + ep)
+            ep_img = images(pool, "train", "random", seed=args.seed * 1000 + k * 100 + ep, levels=args.levels,
+                            layout=args.layout)
             model.train()
             order = rng.permutation(fit)
             n_b = args.limit_batches or int(np.ceil(len(order) / 128))
@@ -148,17 +205,19 @@ def main() -> None:
                 flip = torch.from_numpy(rng.random(len(idx)) < 0.5)
                 xb[flip] = torch.flip(xb[flip], [3])
                 xb, yb = xb.to(DEVICE), torch.from_numpy(y[idx]).to(DEVICE)
-                loss = F.cross_entropy(model(xb), yb, weight=w, label_smoothing=0.05)
+                with torch.autocast(DEVICE.type, enabled=amp):
+                    loss = F.cross_entropy(model(xb).float(), yb, weight=w, label_smoothing=0.05)
                 opt.zero_grad()
-                loss.backward()
-                opt.step()
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
                 sched.step()
                 loss_sum += loss.item()
-            p = predict(model, val_img[va], tta=False)
+            p = predict(model, val_img[va], tta=False, amp=amp)
             print(f"fold {k} ep {ep}: loss {loss_sum / n_b:.4f}  val F1 "
                   f"{f1_score(y[va], p.argmax(1), average='macro'):.4f}  {time.time() - t:.0f}s", flush=True)
-        oof[va] = predict(model, val_img[va])
-        test += predict(model, test_img) / len(args.folds)
+        oof[va] = predict(model, val_img[va], amp=amp)
+        test += predict(model, test_img, amp=amp) / len(args.folds)
         print(f"fold {k} TTA val F1 {f1_score(y[va], oof[va].argmax(1), average='macro'):.4f}", flush=True)
         torch.save(model.state_dict(), ROOT / f"oof/{args.name}_f{k}.pt")
 

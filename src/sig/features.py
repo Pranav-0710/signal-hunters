@@ -87,7 +87,86 @@ def _track_scores(s: np.ndarray, gaps: np.ndarray) -> dict:
     feats["trk_min_on_static"] = min_on[:, static].reshape(n, -1).max(1)
     feats["trk_sum_on"] = on.sum(1).reshape(n, -1).max(1) / np.sqrt(3)
     feats["trk_min_off"] = offp.min(1).reshape(n, -1).max(1)
+    # Coherent sum over the three ON crossings with an OFF penalty: faint ETI that no single panel shows
+    sum_clean = on.sum(1) / np.sqrt(3) - np.maximum(max_off, 0)
+    feats["trk_sum_clean_drifting"] = sum_clean[:, ~static].reshape(n, -1).max(1)
+    feats["trk_sum_clean_static"] = sum_clean[:, static].reshape(n, -1).max(1)
+    sc = sum_clean[:, ~static].reshape(n, -1)
+    top = sc.argmax(1)
+    g2, c2 = np.unravel_index(top, sum_clean[:, ~static].shape[1:])
+    feats["trk_sum_clean_on_min"] = on[:, :, ~static].min(1)[np.arange(n), g2, c2]
+    feats["trk_sum_clean_drift"] = np.abs(TRACK_DRIFTS[~static][g2])
+    feats.update(_drift_consistency(pooled, pos[:, :, ~static], TRACK_DRIFTS[~static], g2, c2))
+    feats["_best_g"] = TRACK_DRIFTS[~static][g2]
+    feats["_best_c"] = c2
     return feats
+
+
+def _drift_consistency(pooled: np.ndarray, pos: np.ndarray, drifts: np.ndarray, g: np.ndarray, c: np.ndarray) -> dict:
+    """At the best drifting track, does each ON panel's own line drift like the track does?
+
+    A real ETI signal has one drift rate everywhere; the "lines that do not connect" trap has
+    panel lines whose local drift disagrees with the slope joining them.
+    """
+    n = len(pooled)
+    idx = np.arange(n)
+    gd = drifts[g]
+    d_err, s_ratio = [], []
+    for p in np.where(ON)[0]:
+        f = np.clip(pos[idx, p, g, c], 0, N_CHAN - 1)
+        window = np.stack([pooled[idx, p, :, np.clip(f + k, 0, N_CHAN - 1)] for k in (-2, -1, 0, 1, 2)], -1)
+        local = window.max(-1)                                                             # (n, D)
+        best = local.argmax(1)
+        d_err.append(np.abs(DRIFTS[best] - gd))
+        at_g = local[idx, np.abs(DRIFTS[None, :] - gd[:, None]).argmin(1)]
+        s_ratio.append(at_g / (local.max(1) + 1e-6))
+    d_err, s_ratio = np.stack(d_err, 1), np.stack(s_ratio, 1)
+    return {
+        "trk_cons_drift_err_mean": d_err.mean(1),
+        "trk_cons_drift_err_max": d_err.max(1),
+        "trk_cons_ratio_min": s_ratio.min(1),
+        "trk_cons_ratio_mean": s_ratio.mean(1),
+    }
+
+
+def line_fit(z: np.ndarray, gaps: np.ndarray, g: np.ndarray, c: np.ndarray, half: int = 4) -> dict:
+    """Sub-channel check of the best drifting track in the three ON panels.
+
+    For every row, the power-weighted centroid of the line within +-4 channels of the track gives
+    its offset from the track. A real ETI signal sits on the track everywhere, so the offsets stay
+    flat inside each panel (same drift) and equal between panels (one connected line). The trap
+    "same drift rate but not connected" shows up as different mean offsets per panel; a drift
+    mismatch as a slope inside the panels.
+    """
+    n = len(z)
+    idx = np.arange(n)[:, None, None]
+    k = np.arange(-half, half + 1)
+    r = np.arange(N_ROWS) - 7.5
+    offs, wsum = [], []
+    for p in np.where(ON)[0]:
+        t = (p - 2) * (N_ROWS + gaps)[:, None] + r[None, :]                                # (n, 16)
+        e = c[:, None] + g[:, None] * t                                                    # expected channel
+        ch = np.round(e)[..., None].astype(int) + k                                        # (n, 16, 9)
+        ok = (ch >= 0) & (ch < N_CHAN)
+        v = z[idx, p, np.arange(N_ROWS)[None, :, None], np.clip(ch, 0, N_CHAN - 1)]
+        w = np.where(ok, np.clip(v - 1.0, 0, None), 0.0)
+        ws = w.sum(-1)
+        cen = (w * (ch - e[..., None])).sum(-1) / np.maximum(ws, 1e-6)                     # offset from track
+        offs.append(cen)
+        wsum.append(ws)
+    off, ws = np.stack(offs, 1), np.stack(wsum, 1)                                         # (n, 3, 16)
+    wn = ws / np.maximum(ws.sum(2, keepdims=True), 1e-6)
+    mean_off = (wn * off).sum(2)                                                           # (n, 3)
+    rc = r - (wn * r).sum(2, keepdims=True)
+    slope = (wn * rc * (off - mean_off[..., None])).sum(2) / np.maximum((wn * rc ** 2).sum(2), 1e-6)
+    return {
+        "fit_offset_spread": mean_off.max(1) - mean_off.min(1),
+        "fit_offset_absmax": np.abs(mean_off).max(1),
+        "fit_slope_absmax": np.abs(slope).max(1),
+        "fit_slope_mean": np.abs(slope.mean(1)),
+        "fit_weight_min": ws.sum(2).min(1),
+        "fit_weight_ratio": ws.sum(2).min(1) / np.maximum(ws.sum(2).max(1), 1e-6),
+    }
 
 
 def sweep_maps(z: np.ndarray) -> np.ndarray:
@@ -163,7 +242,9 @@ def cadence_features(z: np.ndarray, valid: np.ndarray, gaps: np.ndarray) -> pd.D
     cols["persist_off_min"] = st[:, ~ON].min(1).max(1)
     cols["persist_n_ch"] = (srt[:, 1] > 5).sum(1)
 
-    cols.update(track_scores(s, gaps))
+    trk = track_scores(s, gaps)
+    cols.update(line_fit(z, gaps, trk.pop("_best_g"), trk.pop("_best_c")))
+    cols.update(trk)
     cols["trk_gap_vs_free"] = cols["trk_min_on"] - cols["line_best_on_min"]
 
     sw = sweep_maps(z)                                                          # (n, 6, K, T0)
@@ -182,4 +263,62 @@ def cadence_features(z: np.ndarray, valid: np.ndarray, gaps: np.ndarray) -> pd.D
     _panel_block("patch_std", tx.std(2), cols)
     _panel_block("patch_max", tx.max(2), cols)
     _panel_block("patch_n3", (tx > 3).sum(2).astype(float), cols)
+    cols.update(texture_features(z, valid))
     return pd.DataFrame(cols)
+
+
+def panel_levels(x: np.ndarray) -> pd.DataFrame:
+    """Overall brightness of each panel from the raw bytes (n, 6, 16, 128), in log2 power.
+
+    Row-median normalization removes it, but a scintillating star (and a pulsar) lifts the whole
+    ON panel. Levels are relative to the cadence mean; ON-OFF contrasts are also given in units
+    of the spread between the three OFF panels, which absorbs the telescope's gain jitter.
+    """
+    f = x.astype(np.float32) / 24.0
+    valid = x.max(axis=3) > 0
+    rows = np.where(valid, np.median(f, axis=3), np.nan)                                  # (n, 6, 16)
+    lvl = np.nanmedian(rows, axis=2)
+    lvl = np.nan_to_num(lvl - np.nanmean(lvl, axis=1, keepdims=True))
+    on, off = lvl[:, ON], lvl[:, ~ON]
+    spread = off.std(1) + 0.02
+    row_std = np.nanstd(rows - lvl[..., None], axis=2)
+    cols: dict = {}
+    _panel_block("lvl", lvl, cols)
+    cols["lvl_on_min_off_max"] = on.min(1) - off.max(1)
+    cols["lvl_on_off_z"] = (on.mean(1) - off.mean(1)) / spread
+    cols["lvl_on_min_off_max_z"] = cols["lvl_on_min_off_max"] / spread
+    cols["lvl_off_spread"] = spread
+    _panel_block("lvl_rowstd", np.nan_to_num(row_std), cols)
+    return pd.DataFrame(cols)
+
+
+def _corr(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Pearson correlation over the last two axes, per (cadence, panel)."""
+    a = a - a.mean((-2, -1), keepdims=True)
+    b = b - b.mean((-2, -1), keepdims=True)
+    return (a * b).sum((-2, -1)) / np.sqrt((a * a).sum((-2, -1)) * (b * b).sum((-2, -1)) + 1e-9)
+
+
+def texture_features(z: np.ndarray, valid: np.ndarray) -> dict:
+    """Scintillation: patchy brightening over many channels that twinkles in time, ON panels only.
+
+    Narrow lines are clipped first so a bright RFI line does not look like texture.
+    """
+    n = len(z)
+    c = np.clip(z, -4, 4)
+    cols: dict = {}
+    nv = np.maximum(valid.sum(2), 1)
+    row_mean = c.mean(3)                                                   # (n, 6, 16): broad excess per row
+    _panel_block("tex_mean", c.sum((2, 3)) / (nv * N_CHAN), cols)
+    _panel_block("tex_rowmean_std", row_mean.std(2), cols)
+    _panel_block("tex_rowmean_max", row_mean.max(2), cols)
+    _panel_block("tex_ac_time", _corr(c[:, :, 1:], c[:, :, :-1]), cols)
+    _panel_block("tex_ac_chan2", _corr(c[..., 2:], c[..., :-2]), cols)
+    _panel_block("tex_ac_chan6", _corr(c[..., 6:], c[..., :-6]), cols)
+    _panel_block("tex_skew", ((c - c.mean((2, 3), keepdims=True)) ** 3).mean((2, 3)), cols)
+    for rows, chans in ((2, 32), (8, 16), (16, 8)):
+        box = c.reshape(n, 6, N_ROWS // rows, rows, N_CHAN // chans, chans).mean((3, 5)) * np.sqrt(rows * chans)
+        box = box.reshape(n, 6, -1)
+        _panel_block(f"tex_box{rows}x{chans}_std", box.std(2), cols)
+        _panel_block(f"tex_box{rows}x{chans}_max", box.max(2), cols)
+    return cols
