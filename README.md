@@ -60,7 +60,12 @@ not tuned on (+0.002 to +0.005 OOF, +0.008 public).
 - A stacker on all 426 raw features: 0.8795 public (overfits to GBT).
 - Additive-power, patchiness and twinkle features for faint scintillation: no signal beyond
   panel brightness (AUC 0.52 - 0.57 on the confused cases).
-- Pseudo-labelling the test set: not used.
+
+**7. Pseudo-labelling** (`train_lgbm.py --pseudo`, `stack.py --pseudo`): test cadences that the
+11-model stack labels with at least 90% confidence are added, with that label, to every fold's
+training set of LightGBM and of the stacker, so both see real PKS cadences. Validation stays on
+labelled training rows. No test cadence is ever labelled by hand. Final file:
+`submissions/26_stackpl_bias.csv` (cells at the end of `signal_hunters_kaggle_final.ipynb`).
 
 ## Reproducing the final upload
 

@@ -130,6 +130,19 @@ FINAL_RUNS = [
     ("code", "!python scripts/make_submission.py --models stackall eff_lvl_e20 res34_lvl effb2_lvl --weights 0.55 0.15 0.15 0.15 --bias --out 23_blend_top3\n"
              "!python scripts/make_submission.py --models stackall stack7 --weights 0.5 0.5 --bias --out 24_blend_stack7\n"
              "!python scripts/make_submission.py --models stackall eff_lvl_e20 res34_lvl --weights 0.7 0.15 0.15 --bias --out 25_blend_top2"),
+    ("md", "## Pseudo-labelling: LightGBM and the stacker also train on test cadences the stack is at least 90% sure of\n\n"
+           "The input notebooks predate the `--pseudo` option, so the two scripts are rewritten from the repo first."),
+    ("code", "%%writefile scripts/train_lgbm.py\n" + (ROOT / "scripts/train_lgbm.py").read_text(encoding="utf-8")),
+    ("code", "%%writefile scripts/stack.py\n" + (ROOT / "scripts/stack.py").read_text(encoding="utf-8")),
+    ("code", "!python scripts/train_lgbm.py --name lgbm_pl --pseudo stackall --pseudo-thr 0.9\n"
+             "!python scripts/stack.py --models lgbm_pl cnn cnn_s7 cnn_lvl eff_lvl effstk_lvl effb2_lvl eff_lvl_e20 "
+             "eff_lvl_s11 effstk_lvl_s7 res34_lvl --features fit_ trk_ lvl_ --name stackpl --pseudo stackall --pseudo-thr 0.9\n"
+             "!python scripts/make_submission.py --models stackpl --bias --out 26_stackpl_bias"),
+    ("md", "## Pseudo-labelling round 2: labels from the pseudo-labelled stack, threshold 0.85"),
+    ("code", "!python scripts/train_lgbm.py --name lgbm_pl2 --pseudo stackpl --pseudo-thr 0.85\n"
+             "!python scripts/stack.py --models lgbm_pl2 cnn cnn_s7 cnn_lvl eff_lvl effstk_lvl effb2_lvl eff_lvl_e20 "
+             "eff_lvl_s11 effstk_lvl_s7 res34_lvl --features fit_ trk_ lvl_ --name stackpl2 --pseudo stackpl --pseudo-thr 0.85\n"
+             "!python scripts/make_submission.py --models stackpl2 --bias --out 27_stackpl2_bias"),
 ]
 
 

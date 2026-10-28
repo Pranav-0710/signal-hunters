@@ -25,7 +25,7 @@ Owner: Jey Pranav owns every issue. Goutam Adityan is on the team but not availa
 
 ## Competition rules that bind the code
 
-- Train only on the provided data. No outside labelled data. No hand-labelling the test set. No pseudo-labelling.
+- Train only on the provided data. No outside labelled data. No hand-labelling the test set. Pseudo-labelling confident model predictions on the provided test cadences is allowed (not forbidden by the official rules; team decision 28 Oct).
 - Train is from telescope GBT, test from PKS. Never use `tsamp_s`, `channel_width_hz`, `center_freq_mhz` or `telescope` as features: they identify the telescope, not the signal. `slew_gap_rows` is allowed (it places panels on the global time axis).
 - Byte value 0 means a dropped row; treat it as missing.
 - Code must reproduce our best upload exactly: fixed seeds (42), one script per submission, every upload logged in `docs/SUBMISSIONS.md` with its commit hash.
