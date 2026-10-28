@@ -93,6 +93,42 @@ EXTRA_RUNS = [
 ]
 
 
+FINAL_INTRO = """# Signal Hunters - Team Cyclops: final stack
+
+CPU only, no internet. Inputs: the Round 2 data, the output of the main notebook (features,
+LightGBM, CNNs, EfficientNets, repo code) and the output of the extra-models notebook. All base
+models' out-of-fold and test probabilities are stacked by the same second-level LightGBM, then the
+per-class bias is applied. Final file: `submissions/22_stackall_bias.csv`."""
+
+FINAL_SETUP = """import glob, os, shutil, subprocess
+hits = glob.glob('/kaggle/input/**/train_cadences.npy', recursive=True)
+os.environ['SIG_DATA'] = os.path.dirname(hits[0])
+roots = [os.path.dirname(os.path.dirname(p)) for p in glob.glob('/kaggle/input/**/oof/lgbm4_oof.csv', recursive=True)]
+assert roots, 'Add the main notebook output as an input'
+main = roots[0]
+shutil.copytree(main, '/kaggle/working/signal-hunters', dirs_exist_ok=True)
+os.environ['SIG_FEATURES'] = glob.glob('/kaggle/input/**/features/train_deg.parquet', recursive=True)[0].rsplit('/', 1)[0]
+for p in glob.glob('/kaggle/input/**/oof/*.csv', recursive=True):
+    dst = '/kaggle/working/signal-hunters/oof/' + os.path.basename(p)
+    if not os.path.exists(dst):
+        shutil.copy(p, dst)
+        print('added', os.path.basename(p))
+os.chdir('/kaggle/working/signal-hunters')
+print(main, os.environ['SIG_FEATURES'])"""
+
+FINAL_RUNS = [
+    ("md", "## Stack every base model, then the per-class bias"),
+    ("code", "models = [m for m in ['lgbm4', 'cnn', 'cnn_s7', 'cnn_lvl', 'eff_lvl', 'effstk_lvl', 'effb2_lvl', 'eff_lvl_e20',\n"
+             "                     'eff_lvl_s11', 'effstk_lvl_s7', 'res34_lvl']\n"
+             "          if os.path.exists(f'oof/{m}_oof.csv') and os.path.exists(f'oof/{m}_test.csv')]\n"
+             "print('stacking', models)\n"
+             "subprocess.run(['python', 'scripts/stack.py', '--models', *models, '--features', 'fit_', 'trk_', 'lvl_',\n"
+             "                '--name', 'stackall'], check=True)\n"
+             "!python scripts/make_submission.py --models stackall --bias --out 22_stackall_bias\n"
+             "!ls -la submissions"),
+]
+
+
 def cell(kind: str, text: str) -> dict:
     src = text.splitlines(keepends=True)
     if kind == "md":
@@ -100,10 +136,12 @@ def cell(kind: str, text: str) -> dict:
     return {"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [], "source": src}
 
 
-def write(name: str, intro: str, runs: list) -> None:
-    cells = [cell("md", intro), cell("code", SETUP), cell("md", "## 0. Repository code (written verbatim)")]
-    for f in FILES:
-        cells.append(cell("code", f"%%writefile {f}\n" + (ROOT / f).read_text(encoding="utf-8")))
+def write(name: str, intro: str, runs: list, setup: str = SETUP, code: bool = True) -> None:
+    cells = [cell("md", intro), cell("code", setup)]
+    if code:
+        cells.append(cell("md", "## 0. Repository code (written verbatim)"))
+        for f in FILES:
+            cells.append(cell("code", f"%%writefile {f}\n" + (ROOT / f).read_text(encoding="utf-8")))
     cells += [cell(k, t) for k, t in runs]
     nb = {
         "cells": cells,
@@ -120,6 +158,7 @@ def write(name: str, intro: str, runs: list) -> None:
 def main() -> None:
     write("signal_hunters_kaggle", INTRO, RUNS)
     write("signal_hunters_kaggle_extra", EXTRA_INTRO, EXTRA_RUNS)
+    write("signal_hunters_kaggle_final", FINAL_INTRO, FINAL_RUNS, setup=FINAL_SETUP, code=False)
 
 
 if __name__ == "__main__":
