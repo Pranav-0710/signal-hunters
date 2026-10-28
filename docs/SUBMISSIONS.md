@@ -1,6 +1,6 @@
 # Upload log
 
-Round 2 allows 10 uploads per day (the counter resets at midnight IST); the round closes 28 Oct, 10:00 AM IST. Every upload is listed with the commit and the exact command that rebuilds it.
+Round 2 allows 10 uploads per day (the counter resets at midnight IST); the round closes 28 Oct, 10:00 AM IST. The final ranking uses each team's best public upload, scored on the private split. Every upload is listed with the commit and the exact command that rebuilds it.
 "OOF" is macro-F1 on the PKS-degraded training copy, 5 folds from `folds.csv`.
 
 | # | File | Commit | Command | OOF | Public | Notes |
@@ -12,3 +12,5 @@ Round 2 allows 10 uploads per day (the counter resets at midnight IST); the roun
 | 05 | `14_stack5_bias_shift05.csv` | `1251253` | `make_submission.py --models stack5 --bias --shift 0.5 --out 14_stack5_bias_shift05` | 0.891 | 0.8806 | Bias offsets moved halfway toward the EM test class mix. Worse: the EM mix is skewed by the model's own errors. Uploaded 18:42 IST |
 | 06 | `16_stack6_bias.csv` | `d2b9336` | `train_cnn.py --arch efficientnet_b0 --levels --lr 1e-3 --epochs 12 --name eff_lvl`, `stack.py --models lgbm4 cnn cnn_s7 cnn_lvl eff_lvl --features fit_ trk_ lvl_ --name stack6`, `make_submission.py --models stack6 --bias --out 16_stack6_bias` | - | **0.8948** | Adds an ImageNet-pretrained EfficientNet-B0 (0.838 alone, about our best CNN locally) but +0.008 on PKS: pretrained features carry over to the new telescope better. Uploaded 20:07 IST, 9th of 20+ |
 | 07 | `20_stack5all_bias.csv` | `1251253` | `stack.py --models lgbm4 cnn cnn_s7 cnn_lvl --features '' --name stack5all`, `make_submission.py --models stack5all --bias --out 20_stack5all_bias` | - | 0.8795 | Stacker on all 426 raw features: overfits to GBT. Uploaded 20:07 IST |
+| 08 | `18_stack7_bias.csv` | `240054a` | Kaggle notebook `notebooks/signal_hunters_kaggle.ipynb` (Save & Run All, GPU T4, 8.7 h): all cells; `stack.py` over `lgbm4 cnn cnn_s7 cnn_lvl eff_lvl effstk_lvl effb2_lvl eff_lvl_e20`, `make_submission.py --models stack7 --bias --out 18_stack7_bias` | 0.8998 | **0.9044** | Full clean rebuild plus EfficientNet-B2 (0.851), B0 for 20 epochs (0.869) and a stacked-panel B0 (0.801). Uploaded 28 Oct 07:56 IST |
+| 09 | `22_stackall_bias.csv` | `6be4f74` | `notebooks/signal_hunters_kaggle_final.ipynb` (CPU) on the outputs of the main notebook and `notebooks/signal_hunters_kaggle_extra.ipynb` (GPU, 4 h: `eff_lvl_s11` 0.839, `effstk_lvl_s7` 0.802, `res34_lvl` 0.856): `stack.py` over all 11 models, `make_submission.py --models stackall --bias --out 22_stackall_bias` | 0.9025 | **0.9067** | Stack of every base model. Uploaded 28 Oct 08:03 IST, 13th |

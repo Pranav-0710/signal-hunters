@@ -126,6 +126,10 @@ FINAL_RUNS = [
              "                '--name', 'stackall'], check=True)\n"
              "!python scripts/make_submission.py --models stackall --bias --out 22_stackall_bias\n"
              "!ls -la submissions"),
+    ("md", "## Blends of the stack with the strongest single models (log-probability weights, then bias)"),
+    ("code", "!python scripts/make_submission.py --models stackall eff_lvl_e20 res34_lvl effb2_lvl --weights 0.55 0.15 0.15 0.15 --bias --out 23_blend_top3\n"
+             "!python scripts/make_submission.py --models stackall stack7 --weights 0.5 0.5 --bias --out 24_blend_stack7\n"
+             "!python scripts/make_submission.py --models stackall eff_lvl_e20 res34_lvl --weights 0.7 0.15 0.15 --bias --out 25_blend_top2"),
 ]
 
 
