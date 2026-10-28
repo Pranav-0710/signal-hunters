@@ -251,4 +251,3 @@ docs/SUBMISSIONS.md          every upload with its commit, commands, OOF and pub
 - Telescope metadata (`telescope`, `tsamp_s`, `channel_width_hz`, `center_freq_mhz`) is never a
   feature.
 
-Team Cyclops: Jey Pranav (all code, experiments and submissions), Goutam Adityan.
