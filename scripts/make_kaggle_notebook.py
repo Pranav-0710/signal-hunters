@@ -143,6 +143,10 @@ FINAL_RUNS = [
              "!python scripts/stack.py --models lgbm_pl2 cnn cnn_s7 cnn_lvl eff_lvl effstk_lvl effb2_lvl eff_lvl_e20 "
              "eff_lvl_s11 effstk_lvl_s7 res34_lvl --features fit_ trk_ lvl_ --name stackpl2 --pseudo stackpl --pseudo-thr 0.85\n"
              "!python scripts/make_submission.py --models stackpl2 --bias --out 27_stackpl2_bias"),
+    ("md", "## Aggressive variant: stacker only, every test cadence the 11-model stack is at least 70% sure of"),
+    ("code", "!python scripts/stack.py --models lgbm4 cnn cnn_s7 cnn_lvl eff_lvl effstk_lvl effb2_lvl eff_lvl_e20 "
+             "eff_lvl_s11 effstk_lvl_s7 res34_lvl --features fit_ trk_ lvl_ --name stackpl3 --pseudo stackall --pseudo-thr 0.7\n"
+             "!python scripts/make_submission.py --models stackpl3 --bias --out 28_stackpl3_bias"),
 ]
 
 
