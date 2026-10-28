@@ -147,6 +147,10 @@ FINAL_RUNS = [
     ("code", "!python scripts/stack.py --models lgbm4 cnn cnn_s7 cnn_lvl eff_lvl effstk_lvl effb2_lvl eff_lvl_e20 "
              "eff_lvl_s11 effstk_lvl_s7 res34_lvl --features fit_ trk_ lvl_ --name stackpl3 --pseudo stackall --pseudo-thr 0.7\n"
              "!python scripts/make_submission.py --models stackpl3 --bias --out 28_stackpl3_bias"),
+    ("md", "## Stacker round 4: labels from the aggressive stack, threshold 0.6"),
+    ("code", "!python scripts/stack.py --models lgbm4 cnn cnn_s7 cnn_lvl eff_lvl effstk_lvl effb2_lvl eff_lvl_e20 "
+             "eff_lvl_s11 effstk_lvl_s7 res34_lvl --features fit_ trk_ lvl_ --name stackpl4 --pseudo stackpl3 --pseudo-thr 0.6\n"
+             "!python scripts/make_submission.py --models stackpl4 --bias --out 29_stackpl4_bias"),
 ]
 
 
