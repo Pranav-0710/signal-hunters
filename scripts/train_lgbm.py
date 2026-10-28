@@ -6,6 +6,10 @@ closest thing to test we have), and writes:
     oof/<name>_oof_orig.csv  original-train OOF probabilities
     oof/<name>_test.csv      test probabilities, mean over folds
     python scripts/train_lgbm.py --name lgbm
+
+--pseudo MODEL adds the unlabelled test cadences whose oof/MODEL_test.csv top probability is at
+least --pseudo-thr to every fold's training set, labelled with that top class (pseudo-labelling:
+the trees see real PKS feature distributions). Validation stays on labelled train rows only.
 """
 
 import argparse
@@ -36,6 +40,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default="lgbm")
     ap.add_argument("--no-orig", action="store_true", help="train on degraded rows only")
+    ap.add_argument("--pseudo", default=None, help="model whose test probabilities give pseudo-labels")
+    ap.add_argument("--pseudo-thr", type=float, default=0.9)
     args = ap.parse_args()
 
     tr, te = load_split("train"), load_split("test")
@@ -44,6 +50,12 @@ def main() -> None:
     f_te = pd.read_parquet(FEATURES / "test.parquet")
     y, folds = tr.y, load_folds()
     n = len(y)
+    x_ps, y_ps = f_te.iloc[:0], np.zeros(0, dtype=int)
+    if args.pseudo:
+        p = pd.read_csv(ROOT / f"oof/{args.pseudo}_test.csv")[LABELS].to_numpy()
+        keep = p.max(1) >= args.pseudo_thr
+        x_ps, y_ps = f_te[keep].reset_index(drop=True), p[keep].argmax(1)
+        print(f"pseudo-labels: {keep.sum()} test rows at >= {args.pseudo_thr}", flush=True)
 
     oof_dg = np.zeros((n, len(LABELS)))
     oof_tr = np.zeros((n, len(LABELS)))
@@ -51,8 +63,8 @@ def main() -> None:
     for k in range(5):
         fit = folds != k
         xs = [f_dg[fit]] if args.no_orig else [f_tr[fit], f_dg[fit]]
-        x_fit = pd.concat(xs, ignore_index=True)
-        y_fit = np.concatenate([y[fit]] * len(xs))
+        x_fit = pd.concat(xs + [x_ps], ignore_index=True)
+        y_fit = np.concatenate([y[fit]] * len(xs) + [y_ps])
         d_fit = lgb.Dataset(x_fit, y_fit, weight=compute_sample_weight("balanced", y_fit))
         d_val = lgb.Dataset(f_dg[~fit], y[~fit], weight=compute_sample_weight("balanced", y[~fit]))
         m = lgb.train(PARAMS, d_fit, 3000, valid_sets=[d_val],

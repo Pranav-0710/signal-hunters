@@ -42,17 +42,26 @@ def main() -> None:
     ap.add_argument("--models", nargs="+", required=True)
     ap.add_argument("--features", nargs="*", default=[], help="raw feature name prefixes to add")
     ap.add_argument("--name", default="stack")
+    ap.add_argument("--pseudo", default=None, help="model whose test probabilities give pseudo-labels")
+    ap.add_argument("--pseudo-thr", type=float, default=0.9)
     args = ap.parse_args()
 
     tr, te = load_split("train"), load_split("test")
     y, folds = tr.y, load_folds()
     x = inputs(args.models, args.features, "oof", "train_deg.parquet")
     x_te = inputs(args.models, args.features, "test", "test.parquet")
+    x_ps, y_ps = x_te.iloc[:0], np.zeros(0, dtype=int)
+    if args.pseudo:
+        p = pd.read_csv(ROOT / f"oof/{args.pseudo}_test.csv")[LABELS].to_numpy()
+        keep = p.max(1) >= args.pseudo_thr
+        x_ps, y_ps = x_te[keep], p[keep].argmax(1)
+        print(f"pseudo-labels: {keep.sum()} test rows at >= {args.pseudo_thr}", flush=True)
     oof = np.zeros((len(y), len(LABELS)))
     test = np.zeros((len(x_te), len(LABELS)))
     for k in range(5):
         fit = folds != k
-        d_fit = lgb.Dataset(x[fit], y[fit], weight=compute_sample_weight("balanced", y[fit]))
+        x_fit, y_fit = pd.concat([x[fit], x_ps]), np.concatenate([y[fit], y_ps])
+        d_fit = lgb.Dataset(x_fit, y_fit, weight=compute_sample_weight("balanced", y_fit))
         d_val = lgb.Dataset(x[~fit], y[~fit], weight=compute_sample_weight("balanced", y[~fit]))
         m = lgb.train(PARAMS, d_fit, 3000, valid_sets=[d_val], callbacks=[lgb.early_stopping(100, verbose=False)])
         oof[~fit] = m.predict(x[~fit], num_iteration=m.best_iteration)
